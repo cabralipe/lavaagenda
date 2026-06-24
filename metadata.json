@@ -1,0 +1,6 @@
+{
+  "name": "LavaAgenda",
+  "description": "Sistema web SaaS multi-tenant para agendamento de lava-jatos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
