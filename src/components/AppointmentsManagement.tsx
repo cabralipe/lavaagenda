@@ -25,14 +25,22 @@ export default function AppointmentsManagement({ appointments, services, onRefre
 
   const [statusChangeLoading, setStatusChangeLoading] = useState<string | null>(null);
 
-  // Constants based on sandbox current baseline: 2026-06-23 (Tuesday)
-  const BASELINE_TODAY = '2026-06-23';
-  const BASELINE_TOMORROW = '2026-06-24';
-  
-  // Calculate start & end of current baseline week
-  // 2026-06-23 is Tuesday, so Sunday of that week was 2026-06-21, Saturday is 2026-06-27
-  const startOfWeek = '2026-06-21';
-  const endOfWeek = '2026-06-27';
+  // Dynamic date references based on the real current date (local time).
+  const toYMD = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const _now = new Date();
+  const BASELINE_TODAY = toYMD(_now);
+  const _tomorrow = new Date(_now);
+  _tomorrow.setDate(_now.getDate() + 1);
+  const BASELINE_TOMORROW = toYMD(_tomorrow);
+
+  // Current week boundaries (Sunday -> Saturday).
+  const _sow = new Date(_now);
+  _sow.setDate(_now.getDate() - _now.getDay());
+  const _eow = new Date(_sow);
+  _eow.setDate(_sow.getDate() + 6);
+  const startOfWeek = toYMD(_sow);
+  const endOfWeek = toYMD(_eow);
 
   // Apply filters reactively
   const filteredAppointments = useMemo(() => {

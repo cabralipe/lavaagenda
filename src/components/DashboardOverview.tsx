@@ -17,9 +17,10 @@ interface DashboardOverviewProps {
 
 export default function DashboardOverview({ appointments, services, onRefresh, loading, onNavigateToTab }: DashboardOverviewProps) {
   
-  // Dynamic stats calculation based on seeded metadata (today is 2026-06-23)
+  // Dynamic stats calculation based on the real current date
   const stats = useMemo(() => {
-    const todayStr = '2026-06-23'; // Fixed baseline today to match simulation parameters
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     
     const todayApts = appointments.filter(apt => apt.appointment_date === todayStr);
     const totalToday = todayApts.length;
