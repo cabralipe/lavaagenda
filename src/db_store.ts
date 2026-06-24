@@ -702,7 +702,7 @@ export const db = {
 
       return (data || []).some(apt => {
         // Overlap logic: (StartA < EndB) and (EndA > StartB)
-        return (start < apt.end_time && end > apt.start_time);
+        return (start.substring(0, 5) < apt.end_time.substring(0, 5) && end.substring(0, 5) > apt.start_time.substring(0, 5));
       });
     } else {
       const local = readLocalDB();
@@ -710,7 +710,7 @@ export const db = {
         if (apt.tenant_id !== tenantId || apt.appointment_date !== date || apt.status === 'cancelado') {
           return false;
         }
-        return (start < apt.end_time && end > apt.start_time);
+        return (start.substring(0, 5) < apt.end_time.substring(0, 5) && end.substring(0, 5) > apt.start_time.substring(0, 5));
       });
     }
   }
