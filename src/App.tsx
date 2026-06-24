@@ -16,9 +16,10 @@ import PublicBookingPage from './components/PublicBookingPage';
 import DashboardOverview from './components/DashboardOverview';
 import ServicesManagement from './components/ServicesManagement';
 import AppointmentsManagement from './components/AppointmentsManagement';
+import SettingsManagement from './components/SettingsManagement';
 
 // Icons
-import { Calendar, LayoutDashboard, Settings2, CalendarDays, LogOut, Copy, ExternalLink, Menu, X, Check } from 'lucide-react';
+import { Calendar, LayoutDashboard, Settings2, CalendarDays, LogOut, Copy, ExternalLink, Menu, X, Check, Cog } from 'lucide-react';
 
 export default function App() {
   // Simple Client-side Router State
@@ -104,6 +105,8 @@ export default function App() {
       setAdminTab('services');
     } else if (currentPath === '/dashboard/appointments') {
       setAdminTab('appointments');
+    } else if (currentPath === '/dashboard/settings') {
+      setAdminTab('settings');
     } else if (currentPath === '/dashboard') {
       setAdminTab('dashboard');
     }
@@ -304,6 +307,23 @@ export default function App() {
                   Serviços Oferecidos
                 </button>
 
+                {/* Tab: Configurações */}
+                <button
+                  id="tab-btn-settings"
+                  onClick={() => {
+                    setAdminTab('settings');
+                    navigateTo('/dashboard/settings');
+                  }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                    adminTab === 'settings'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <Cog className="w-4.5 h-4.5" />
+                  Configurações
+                </button>
+
                 {/* Active Tenant Box from the Professional Polish design theme */}
                 <div className="mt-6 pt-4 border-t border-slate-800">
                   <div className="bg-slate-800 rounded-xl p-3.5 border border-slate-700/50">
@@ -336,8 +356,15 @@ export default function App() {
                 <AppointmentsManagement
                   appointments={appointments}
                   services={services}
+                  tenantId={session.tenant_id}
                   onRefresh={loadAdminData}
                   loading={loading}
+                />
+              )}
+              {adminTab === 'settings' && (
+                <SettingsManagement
+                  session={session}
+                  onSessionUpdate={setSession}
                 />
               )}
               {adminTab === 'dashboard' && (

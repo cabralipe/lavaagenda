@@ -124,3 +124,38 @@ create policy "Members can read and write appointments of their own tenant"
 create policy "Anyone can create an appointment (public booking)"
   on public.appointments for insert
   with check (true); -- Booking page inserts appointments directly
+
+-- --------------------------------------------------------
+-- POST-LAUNCH HARDENING MIGRATIONS (applied via MCP)
+-- --------------------------------------------------------
+
+-- Member metadata so employees can be listed without the Auth admin API.
+alter table public.tenant_members
+  add column if not exists email text,
+  add column if not exists name text;
+
+-- Pin search_path on the RLS helper (security linter 0011).
+create or replace function public.is_tenant_member(tenant_id uuid)
+returns boolean
+security definer
+set search_path = ''
+as $$
+begin
+  return exists (
+    select 1 from public.tenant_members
+    where public.tenant_members.tenant_id = $1
+    and public.tenant_members.user_id = auth.uid()
+  );
+end;
+$$ language plpgsql;
+
+-- Atomic anti-double-booking: forbid overlapping non-cancelled appointments per tenant.
+create extension if not exists btree_gist;
+
+alter table public.appointments
+  add constraint appointments_no_overlap
+  exclude using gist (
+    tenant_id with =,
+    tsrange((appointment_date + start_time), (appointment_date + end_time)) with &&
+  )
+  where (status <> 'cancelado');

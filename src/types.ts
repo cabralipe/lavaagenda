@@ -21,6 +21,8 @@ export interface TenantMember {
   tenant_id: string;
   user_id: string;
   role: TenantRole;
+  email?: string;
+  name?: string;
   created_at?: string;
 }
 

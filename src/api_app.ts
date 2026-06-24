@@ -68,6 +68,25 @@ const appointmentSchema = z.object({
   start_time: z.string().regex(HHMM, 'Horário inválido.'),
 });
 
+const tenantUpdateSchema = z.object({
+  name: z.string().min(1).optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
+  opening_time: z.string().regex(HHMM, 'Horário de abertura inválido.').optional(),
+  closing_time: z.string().regex(HHMM, 'Horário de fechamento inválido.').optional(),
+});
+
+const memberCreateSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6, 'A senha deve ter ao menos 6 caracteres.'),
+  name: z.string().min(1),
+});
+
+const rescheduleSchema = z.object({
+  appointment_date: z.string().regex(YMD, 'Data inválida.'),
+  start_time: z.string().regex(HHMM, 'Horário inválido.'),
+});
+
 function firstZodError(err: z.ZodError): string {
   return err.issues[0]?.message || 'Dados inválidos.';
 }
@@ -75,6 +94,13 @@ function firstZodError(err: z.ZodError): string {
 export function createApp(): express.Express {
   const app = express();
   app.use(express.json());
+
+  // Basic in-memory login rate limiter (per IP+email). Note: per-instance in serverless.
+  const loginAttempts = new Map<string, { count: number; first: number }>();
+  const RL_WINDOW = 15 * 60 * 1000;
+  const RL_MAX = 8;
+  const rateKey = (req: express.Request, email: string) =>
+    `${(req.headers['x-forwarded-for'] as string) || req.ip || ''}|${email.toLowerCase()}`;
 
   const getSessionUser = (req: express.Request) => {
     const authHeader = req.headers.authorization;
@@ -98,18 +124,33 @@ export function createApp(): express.Express {
 
   // --- Auth ---
   app.post('/api/auth/login', async (req, res) => {
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: firstZodError(parsed.error) });
+    }
+    const { email, password } = parsed.data;
+    const key = rateKey(req, email);
+    const rec = loginAttempts.get(key);
+    if (rec && Date.now() - rec.first < RL_WINDOW && rec.count >= RL_MAX) {
+      return res.status(429).json({ error: 'Muitas tentativas de login. Tente novamente em alguns minutos.' });
+    }
+    const registerFail = () => {
+      const cur = loginAttempts.get(key);
+      if (!cur || Date.now() - cur.first >= RL_WINDOW) loginAttempts.set(key, { count: 1, first: Date.now() });
+      else cur.count++;
+    };
     try {
-      const parsed = loginSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ error: firstZodError(parsed.error) });
-      }
-      const { email, password } = parsed.data;
       const session = await db.authenticateUser(email, password);
       if (!session) {
+        registerFail();
         return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
       }
+      loginAttempts.delete(key);
       res.json({ token: signToken(session), user: session });
     } catch (error: any) {
+      registerFail();
+      const isBadCreds = /invalid login credentials/i.test(error.message || '');
+      if (isBadCreds) return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
       console.error('Login error:', error);
       res.status(500).json({ error: error.message || 'Erro interno ao realizar login.' });
     }
@@ -200,14 +241,14 @@ export function createApp(): express.Express {
       if (service.tenant_id !== user.tenant_id) {
         return res.status(403).json({ error: 'Permissão negada.' });
       }
-      const { name, description, price, duration_minutes, active } = req.body;
-      const updated = await db.updateService(req.params.id, {
-        name,
-        description,
-        price: price !== undefined ? Number(price) : undefined,
-        duration_minutes: duration_minutes !== undefined ? Number(duration_minutes) : undefined,
-        active,
-      });
+      const body = req.body || {};
+      const updates: Record<string, any> = {};
+      if (body.name !== undefined) updates.name = body.name;
+      if (body.description !== undefined) updates.description = body.description;
+      if (body.price !== undefined) updates.price = Number(body.price);
+      if (body.duration_minutes !== undefined) updates.duration_minutes = Number(body.duration_minutes);
+      if (body.active !== undefined) updates.active = body.active;
+      const updated = await db.updateService(req.params.id, updates);
       res.json(updated);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -349,6 +390,104 @@ export function createApp(): express.Express {
     } catch (error: any) {
       console.error('Error creating appointment:', error);
       res.status(400).json({ error: error.message || 'Horário indisponível ou erro no agendamento.' });
+    }
+  });
+
+  // --- Tenant profile (owner only) ---
+  app.put('/api/tenants/:id', requireAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      if (user.role !== 'owner') return res.status(403).json({ error: 'Apenas o proprietário pode editar os dados do lava-jato.' });
+      if (user.tenant_id !== req.params.id) return res.status(403).json({ error: 'Acesso negado.' });
+      const parsed = tenantUpdateSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: firstZodError(parsed.error) });
+      const current = await db.getTenantById(req.params.id);
+      if (!current) return res.status(404).json({ error: 'Lava-jato não encontrado.' });
+      const eff = { ...current, ...parsed.data };
+      if (toMinutes(eff.opening_time) >= toMinutes(eff.closing_time)) {
+        return res.status(400).json({ error: 'O horário de abertura deve ser anterior ao de fechamento.' });
+      }
+      res.json(await db.updateTenant(req.params.id, parsed.data));
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // --- Team / members ---
+  app.get('/api/members/tenant/:tenant_id', requireAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      if (user.tenant_id !== req.params.tenant_id) return res.status(403).json({ error: 'Acesso negado.' });
+      res.json(await db.getMembersByTenant(req.params.tenant_id));
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/members', requireAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      if (user.role !== 'owner') return res.status(403).json({ error: 'Apenas o proprietário pode adicionar funcionários.' });
+      const parsed = memberCreateSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: firstZodError(parsed.error) });
+      const member = await db.createEmployee(user.tenant_id, parsed.data);
+      res.status(201).json(member);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || 'Falha ao adicionar funcionário.' });
+    }
+  });
+
+  app.delete('/api/members/:id', requireAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      if (user.role !== 'owner') return res.status(403).json({ error: 'Apenas o proprietário pode remover funcionários.' });
+      const member = await db.getMemberById(req.params.id);
+      if (!member || member.tenant_id !== user.tenant_id) return res.status(404).json({ error: 'Funcionário não encontrado.' });
+      if (member.role === 'owner') return res.status(400).json({ error: 'Não é possível remover o proprietário.' });
+      await db.deleteMember(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // --- Appointment reschedule / delete ---
+  app.put('/api/appointments/:id', requireAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const apt = await db.getAppointmentById(req.params.id);
+      if (!apt || apt.tenant_id !== user.tenant_id) return res.status(404).json({ error: 'Agendamento não encontrado.' });
+      const parsed = rescheduleSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: firstZodError(parsed.error) });
+      const { appointment_date, start_time } = parsed.data;
+      const tenant = await db.getTenantById(user.tenant_id);
+      const service = await db.getServiceById(apt.service_id);
+      if (!tenant || !service) return res.status(404).json({ error: 'Dados do agendamento incompletos.' });
+      const today = new Date().toISOString().slice(0, 10);
+      if (appointment_date < today) return res.status(400).json({ error: 'Não é possível agendar em uma data passada.' });
+      const startMin = toMinutes(start_time);
+      const endMin = startMin + service.duration_minutes;
+      if (startMin < toMinutes(tenant.opening_time) || endMin > toMinutes(tenant.closing_time)) {
+        return res.status(400).json({ error: 'Horário fora do período de funcionamento do lava-jato.' });
+      }
+      const end_time = addMinutes(start_time, service.duration_minutes);
+      const overlap = await db.checkOverlap(user.tenant_id, appointment_date, start_time, end_time, apt.id);
+      if (overlap) return res.status(400).json({ error: 'Este horário já está ocupado por outro agendamento.' });
+      res.json(await db.updateAppointment(apt.id, { appointment_date, start_time, end_time }));
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || 'Falha ao reagendar.' });
+    }
+  });
+
+  app.delete('/api/appointments/:id', requireAuth, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const apt = await db.getAppointmentById(req.params.id);
+      if (!apt || apt.tenant_id !== user.tenant_id) return res.status(404).json({ error: 'Agendamento não encontrado.' });
+      await db.deleteAppointment(apt.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   });
 

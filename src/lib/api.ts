@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { UserSession, Tenant, Service, Appointment } from '../types';
+import { UserSession, Tenant, TenantMember, Service, Appointment } from '../types';
 
 const getHeaders = () => {
   const token = localStorage.getItem('lava_agenda_token');
@@ -193,6 +193,63 @@ export const api = {
       throw new Error(data.error || 'Falha ao agendar serviço.');
     }
     return data;
+  },
+
+  // Tenant profile
+  async updateTenant(id: string, data: Partial<Pick<Tenant, 'name' | 'phone' | 'address' | 'opening_time' | 'closing_time'>>): Promise<Tenant> {
+    const res = await fetch(`/api/tenants/${id}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(data),
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Falha ao atualizar dados do lava-jato.');
+    return out;
+  },
+
+  // Team / members
+  async getMembers(tenantId: string): Promise<TenantMember[]> {
+    const res = await fetch(`/api/members/tenant/${tenantId}`, { method: 'GET', headers: getHeaders() });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Falha ao carregar a equipe.');
+    return out;
+  },
+
+  async createMember(data: { email: string; password: string; name: string }): Promise<TenantMember> {
+    const res = await fetch('/api/members', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify(data),
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Falha ao adicionar funcionário.');
+    return out;
+  },
+
+  async deleteMember(id: string): Promise<boolean> {
+    const res = await fetch(`/api/members/${id}`, { method: 'DELETE', headers: getHeaders() });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Falha ao remover funcionário.');
+    return true;
+  },
+
+  // Appointment reschedule / delete
+  async rescheduleAppointment(id: string, data: { appointment_date: string; start_time: string }): Promise<Appointment> {
+    const res = await fetch(`/api/appointments/${id}`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(data),
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Falha ao reagendar.');
+    return out;
+  },
+
+  async deleteAppointment(id: string): Promise<boolean> {
+    const res = await fetch(`/api/appointments/${id}`, { method: 'DELETE', headers: getHeaders() });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Falha ao excluir agendamento.');
+    return true;
   },
 
   async checkHealth(): Promise<{ isDemo: boolean }> {

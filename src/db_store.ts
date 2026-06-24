@@ -275,6 +275,149 @@ function generateUUID(): string {
 export const db = {
   isDemo: () => !isSupabaseConfigured,
 
+  // --- Tenant updates ---
+  async updateTenant(id: string, updates: Partial<Omit<Tenant, 'id' | 'slug' | 'created_at'>>): Promise<Tenant> {
+    updates = Object.fromEntries(Object.entries(updates).filter(([, v]) => v !== undefined)) as any;
+    if (supabase) {
+      const { data, error } = await supabase.from('tenants').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      return data;
+    } else {
+      const local = readLocalDB();
+      const i = local.tenants.findIndex(t => t.id === id);
+      if (i === -1) throw new Error('Lava-jato não encontrado.');
+      local.tenants[i] = { ...local.tenants[i], ...updates };
+      writeLocalDB(local);
+      return local.tenants[i];
+    }
+  },
+
+  // --- Team / members ---
+  async getMembersByTenant(tenantId: string): Promise<TenantMember[]> {
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('tenant_members')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return data || [];
+    } else {
+      const local = readLocalDB();
+      return local.tenant_members.filter(m => m.tenant_id === tenantId);
+    }
+  },
+
+  async getMemberById(id: string): Promise<TenantMember | null> {
+    if (supabase) {
+      const { data, error } = await supabase.from('tenant_members').select('*').eq('id', id).maybeSingle();
+      if (error) throw error;
+      return data;
+    } else {
+      const local = readLocalDB();
+      return local.tenant_members.find(m => m.id === id) || null;
+    }
+  },
+
+  async createEmployee(tenantId: string, payload: { email: string; password: string; name: string }): Promise<TenantMember> {
+    if (supabase) {
+      const { data: created, error: cErr } = await supabase.auth.admin.createUser({
+        email: payload.email,
+        password: payload.password,
+        email_confirm: true,
+      });
+      if (cErr) throw new Error(cErr.message || 'Não foi possível criar o funcionário.');
+      if (!created.user) throw new Error('Falha ao criar o usuário do funcionário.');
+      return await this.createMember({
+        tenant_id: tenantId,
+        user_id: created.user.id,
+        role: 'employee',
+        email: payload.email,
+        name: payload.name,
+      });
+    } else {
+      const local = readLocalDB();
+      if (local.users.some(u => u.email.toLowerCase() === payload.email.toLowerCase())) {
+        throw new Error('E-mail já cadastrado.');
+      }
+      const userId = generateUUID();
+      local.users.push({ id: userId, email: payload.email, passwordHash: payload.password });
+      writeLocalDB(local);
+      return await this.createMember({
+        tenant_id: tenantId,
+        user_id: userId,
+        role: 'employee',
+        email: payload.email,
+        name: payload.name,
+      });
+    }
+  },
+
+  async deleteMember(id: string): Promise<boolean> {
+    if (supabase) {
+      const { data: member } = await supabase.from('tenant_members').select('user_id').eq('id', id).maybeSingle();
+      const { error } = await supabase.from('tenant_members').delete().eq('id', id);
+      if (error) throw error;
+      if (member?.user_id) {
+        try { await supabase.auth.admin.deleteUser(member.user_id); } catch { /* best effort */ }
+      }
+      return true;
+    } else {
+      const local = readLocalDB();
+      const member = local.tenant_members.find(m => m.id === id);
+      local.tenant_members = local.tenant_members.filter(m => m.id !== id);
+      if (member) local.users = local.users.filter(u => u.id !== member.user_id);
+      writeLocalDB(local);
+      return true;
+    }
+  },
+
+  // --- Appointment read/update/delete ---
+  async getAppointmentById(id: string): Promise<Appointment | null> {
+    if (supabase) {
+      const { data, error } = await supabase.from('appointments').select('*').eq('id', id).maybeSingle();
+      if (error) throw error;
+      return data;
+    } else {
+      const local = readLocalDB();
+      return local.appointments.find(a => a.id === id) || null;
+    }
+  },
+
+  async updateAppointment(id: string, updates: Partial<Pick<Appointment, 'appointment_date' | 'start_time' | 'end_time' | 'status'>>): Promise<Appointment> {
+    if (supabase) {
+      const { data, error } = await supabase.from('appointments').update(updates).eq('id', id).select().single();
+      if (error) {
+        if ((error as any).code === '23P01') {
+          throw new Error('Este horário já está ocupado por outro agendamento.');
+        }
+        throw error;
+      }
+      return data;
+    } else {
+      const local = readLocalDB();
+      const i = local.appointments.findIndex(a => a.id === id);
+      if (i === -1) throw new Error('Agendamento não encontrado.');
+      local.appointments[i] = { ...local.appointments[i], ...updates };
+      writeLocalDB(local);
+      return local.appointments[i];
+    }
+  },
+
+  async deleteAppointment(id: string): Promise<boolean> {
+    if (supabase) {
+      const { error } = await supabase.from('appointments').delete().eq('id', id);
+      if (error) throw error;
+      return true;
+    } else {
+      const local = readLocalDB();
+      const before = local.appointments.length;
+      local.appointments = local.appointments.filter(a => a.id !== id);
+      writeLocalDB(local);
+      return local.appointments.length < before;
+    }
+  },
+
   // --- Tenants ---
   async getTenantBySlug(slug: string): Promise<Tenant | null> {
     if (supabase) {
@@ -422,7 +565,8 @@ export const db = {
       const member = await this.createMember({
         tenant_id: tenant.id,
         user_id: authData.user.id,
-        role: 'owner'
+        role: 'owner',
+        email,
       });
 
       return {
@@ -465,6 +609,7 @@ export const db = {
         tenant_id: tenantId,
         user_id: userId,
         role: 'owner',
+        email,
         created_at: new Date().toISOString()
       };
 
@@ -556,6 +701,7 @@ export const db = {
   },
 
   async updateService(serviceId: string, updates: Partial<Omit<Service, 'id' | 'tenant_id'>>): Promise<Service> {
+    updates = Object.fromEntries(Object.entries(updates).filter(([, v]) => v !== undefined)) as any;
     if (supabase) {
       const { data, error } = await supabase
         .from('services')
@@ -655,7 +801,12 @@ export const db = {
         .insert([newApt])
         .select()
         .single();
-      if (error) throw error;
+      if (error) {
+        if ((error as any).code === '23P01') {
+          throw new Error('Este horário já está ocupado por outro agendamento.');
+        }
+        throw error;
+      }
       return data;
     } else {
       const local = readLocalDB();
@@ -687,17 +838,19 @@ export const db = {
   },
 
   // Availability / Overlap Checker
-  async checkOverlap(tenantId: string, date: string, start: string, end: string): Promise<boolean> {
+  async checkOverlap(tenantId: string, date: string, start: string, end: string, excludeId?: string): Promise<boolean> {
     // start and end are in "HH:MM" format.
     // Check if there is any non-cancelled appointment that overlaps on this date.
     if (supabase) {
-      const { data, error } = await supabase
+      let query = supabase
         .from('appointments')
         .select('*')
         .eq('tenant_id', tenantId)
         .eq('appointment_date', date)
         .neq('status', 'cancelado');
-      
+      if (excludeId) query = query.neq('id', excludeId);
+      const { data, error } = await query;
+
       if (error) throw error;
 
       return (data || []).some(apt => {
@@ -708,6 +861,9 @@ export const db = {
       const local = readLocalDB();
       return local.appointments.some(apt => {
         if (apt.tenant_id !== tenantId || apt.appointment_date !== date || apt.status === 'cancelado') {
+          return false;
+        }
+        if (excludeId && apt.id === excludeId) {
           return false;
         }
         return (start.substring(0, 5) < apt.end_time.substring(0, 5) && end.substring(0, 5) > apt.start_time.substring(0, 5));

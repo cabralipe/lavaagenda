@@ -3,27 +3,100 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Appointment, Service, AppointmentStatus } from '../types';
-import { Check, Play, CheckCircle2, XCircle, Filter, Calendar, Phone, MessageSquare, Car, FileText, Info, Loader2 } from 'lucide-react';
+import { Check, Play, CheckCircle2, XCircle, Filter, Calendar, CalendarClock, Phone, MessageSquare, Car, FileText, Info, Loader2, Trash2, AlertCircle } from 'lucide-react';
 import { api } from '../lib/api';
 
 interface AppointmentsManagementProps {
   appointments: Appointment[];
   services: Service[];
+  tenantId: string;
   onRefresh: () => void;
   loading: boolean;
 }
 
 type DateFilterType = 'all' | 'today' | 'tomorrow' | 'week';
 
-export default function AppointmentsManagement({ appointments, services, onRefresh, loading }: AppointmentsManagementProps) {
+export default function AppointmentsManagement({ appointments, services, tenantId, onRefresh, loading }: AppointmentsManagementProps) {
   // Filters state
   const [dateFilter, setDateFilter] = useState<DateFilterType>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [serviceFilter, setServiceFilter] = useState<string>('all');
 
   const [statusChangeLoading, setStatusChangeLoading] = useState<string | null>(null);
+
+  // Reschedule modal state
+  const [rescheduleApt, setRescheduleApt] = useState<Appointment | null>(null);
+  const [rDate, setRDate] = useState('');
+  const [rSlots, setRSlots] = useState<string[]>([]);
+  const [rSlot, setRSlot] = useState('');
+  const [rLoadingSlots, setRLoadingSlots] = useState(false);
+  const [rSubmitting, setRSubmitting] = useState(false);
+  const [rError, setRError] = useState<string | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState<string | null>(null);
+
+  const todayYMD = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+
+  const openReschedule = (apt: Appointment) => {
+    setRescheduleApt(apt);
+    setRDate(apt.appointment_date < todayYMD ? todayYMD : apt.appointment_date);
+    setRSlot('');
+    setRError(null);
+  };
+
+  useEffect(() => {
+    if (!rescheduleApt || !rDate) return;
+    let active = true;
+    (async () => {
+      try {
+        setRLoadingSlots(true);
+        const slots = await api.getAvailableSlots(tenantId, rDate, rescheduleApt.service_id);
+        if (active) setRSlots(slots);
+      } catch {
+        if (active) setRSlots([]);
+      } finally {
+        if (active) setRLoadingSlots(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [rescheduleApt, rDate, tenantId]);
+
+  const handleReschedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!rescheduleApt) return;
+    if (!rDate || !rSlot) {
+      setRError('Escolha uma data e um horário disponível.');
+      return;
+    }
+    setRSubmitting(true);
+    setRError(null);
+    try {
+      await api.rescheduleAppointment(rescheduleApt.id, { appointment_date: rDate, start_time: rSlot });
+      setRescheduleApt(null);
+      onRefresh();
+    } catch (err: any) {
+      setRError(err.message || 'Falha ao reagendar.');
+    } finally {
+      setRSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (aptId: string) => {
+    if (!confirm('Excluir definitivamente este agendamento? Esta ação não pode ser desfeita.')) return;
+    setDeleteLoading(aptId);
+    try {
+      await api.deleteAppointment(aptId);
+      onRefresh();
+    } catch (err: any) {
+      alert(err.message || 'Falha ao excluir agendamento.');
+    } finally {
+      setDeleteLoading(null);
+    }
+  };
 
   // Dynamic date references based on the real current date (local time).
   const toYMD = (d: Date) =>
@@ -321,12 +394,94 @@ export default function AppointmentsManagement({ appointments, services, onRefre
                         Cancelar
                       </button>
                     )}
+
+                    {/* Action: Reschedule */}
+                    {apt.status !== 'concluido' && apt.status !== 'cancelado' && (
+                      <button
+                        onClick={() => openReschedule(apt)}
+                        className="inline-flex items-center gap-1 hover:bg-amber-50 border border-slate-200 text-amber-600 hover:text-amber-700 hover:border-amber-200 font-bold text-[10px] uppercase tracking-wider px-2.5 py-1.5 rounded-lg cursor-pointer"
+                      >
+                        <CalendarClock className="w-3.5 h-3.5" />
+                        Reagendar
+                      </button>
+                    )}
+
+                    {/* Action: Delete */}
+                    <button
+                      onClick={() => handleDelete(apt.id)}
+                      disabled={deleteLoading === apt.id}
+                      className="inline-flex items-center gap-1 hover:bg-red-50 border border-slate-200 text-slate-500 hover:text-red-700 hover:border-red-200 font-bold text-[10px] uppercase tracking-wider px-2.5 py-1.5 rounded-lg cursor-pointer"
+                      title="Excluir agendamento"
+                    >
+                      {deleteLoading === apt.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      Excluir
+                    </button>
                   </>
                 )}
               </div>
 
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Reschedule Modal */}
+      {rescheduleApt && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-xl overflow-hidden border border-slate-100">
+            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+              <h3 className="font-extrabold text-slate-800 text-sm">Reagendar — {rescheduleApt.customer_name}</h3>
+              <button onClick={() => setRescheduleApt(null)} className="text-slate-400 hover:text-slate-600 font-semibold text-lg cursor-pointer">&times;</button>
+            </div>
+            <form onSubmit={handleReschedule} className="p-6 space-y-4">
+              {rError && (
+                <div className="bg-red-50 border-l-4 border-red-500 p-3 text-xs text-red-800 rounded-r flex items-start gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <span>{rError}</span>
+                </div>
+              )}
+              <p className="text-[11px] text-slate-500">
+                Serviço: <span className="font-bold text-slate-700">{rescheduleApt.service?.name}</span> ({rescheduleApt.service?.duration_minutes} min)
+              </p>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600">Nova data</label>
+                <input
+                  type="date"
+                  min={todayYMD}
+                  value={rDate}
+                  onChange={(e) => { setRDate(e.target.value); setRSlot(''); }}
+                  className="block w-full mt-1 px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs text-slate-800"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600">Horário disponível</label>
+                {rLoadingSlots ? (
+                  <div className="py-4 text-center"><Loader2 className="animate-spin w-5 h-5 text-blue-600 mx-auto" /></div>
+                ) : rSlots.length === 0 ? (
+                  <p className="text-[11px] text-slate-400 mt-2">Nenhum horário livre nesta data.</p>
+                ) : (
+                  <div className="grid grid-cols-4 gap-2 mt-2 max-h-40 overflow-y-auto">
+                    {rSlots.map((slot) => (
+                      <button
+                        type="button"
+                        key={slot}
+                        onClick={() => setRSlot(slot)}
+                        className={`text-xs font-bold py-1.5 rounded-lg border cursor-pointer ${rSlot === slot ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-blue-300'}`}
+                      >
+                        {slot}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="pt-4 border-t border-slate-100 flex justify-end gap-3">
+                <button type="button" onClick={() => setRescheduleApt(null)} className="px-4 py-2 border border-slate-200 text-slate-500 hover:text-slate-800 font-semibold text-xs rounded-lg cursor-pointer">Cancelar</button>
+                <button type="submit" disabled={rSubmitting || !rSlot} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold text-xs rounded-lg shadow-sm inline-flex items-center gap-1 cursor-pointer">
+                  {rSubmitting ? <><Loader2 className="animate-spin w-3.5 h-3.5" /> Salvando...</> : 'Confirmar Reagendamento'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
